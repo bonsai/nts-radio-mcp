@@ -1,0 +1,33 @@
+{
+  "name": "nts-radio-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for NTS Radio - provides access to live broadcasts, mixtapes, show search, and stream URLs",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "radio": "node dist/tui.js",
+    "dev": "tsx watch src/index.ts",
+    "test": "echo \"No tests specified\" && exit 0"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "nts",
+    "nts-radio",
+    "radio",
+    "music"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

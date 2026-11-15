@@ -3,7 +3,9 @@
 import { spawn, ChildProcess } from 'child_process';
 import { getLiveBroadcasts, getMixtapes, getStreamUrls, updateNowPlayingLastFm } from './api.js';
 import { appendPlay, readHistory } from './history.js';
-import { fetchIcecastMetadata, IcecastMetadata } from './icecast.js';
+import { fetchIcecastMetadata } from './icecast.js';
+import { identifyCurrentTrack, IdentifiedTrack } from './identify.js';
+import { scrobbleToLastFm } from './api.js';
 
 interface Station {
   kind: 'live' | 'mixtape';
@@ -23,7 +25,7 @@ const state = {
   offset: 0,
   view: 'list' as 'list' | 'viz',
   identifying: false,
-  identifiedTrack: null as IcecastMetadata | null,
+  identifiedTrack: null as IdentifiedTrack | null,
 };
 
 function decode(s: string): string {
@@ -108,6 +110,40 @@ function play(index: number): void {
     .catch(() => {});
   // 履歴記録
   appendPlay({ stationIndex: index, stationName: st.name, stationKind: st.kind, subtitle: st.subtitle });
+
+  // ライブチャンネル: 自動で Icecast メタデータを取得して現在曲を表示
+  if (st.kind === 'live') {
+    const streams = getStreamUrls();
+    const url = index === 0 ? streams.channel1.icecast : streams.channel2.icecast;
+    state.status = `playing: ${st.name} (メタデータ取得中…)`;
+    render();
+    fetchIcecastMetadata(url).then((meta) => {
+      if (meta && (meta.title || meta.artist)) {
+        if (!state.identifiedTrack) {
+          state.identifiedTrack = { title: meta.title ?? 'Unknown', artist: meta.artist ?? 'Unknown', source: 'icecast' };
+          state.status = `playing: ${st.name} | 現在曲: ${meta.artist ?? ''} - ${meta.title ?? ''}`;
+          render();
+        }
+      }
+    }).catch(() => {});
+    // シャザム識別をバックグラウンドで実行（結果があれば Icecast より優先）
+    identifyCurrentTrack(index === 0 ? '1' : '2').then((track) => {
+      if (track.source === 'shazam' && track.title !== 'Unknown') {
+        state.identifiedTrack = track;
+        state.status = `playing: ${st.name} | シャザム: ${track.artist} - ${track.title}`;
+        render();
+      }
+      // バックグラウンド scrobble（Last.fm）
+      scrobbleToLastFm({}, [{
+        artist: track.artist,
+        track: track.title,
+        album: track.album,
+        timestamp: Math.floor(Date.now() / 1000),
+        chosenByUser: false,
+      }]).catch(() => {});
+    }).catch(() => {});
+  }
+
   render();
 }
 
@@ -186,7 +222,7 @@ function render(): void {
 
   const out: string[] = [];
   out.push(ANSI.clear + ANSI.hide);
-  out.push(`${ANSI.bold}${ANSI.magenta} NTS RADIO ${ANSI.reset}${ANSI.dim}tui  |  ↑↓ move  Enter play/stop  r refresh  i icecast  v viz  q quit  ${ANSI.reset}`);
+  out.push(`${ANSI.bold}${ANSI.magenta} NTS RADIO ${ANSI.reset}${ANSI.dim}tui  |  ↑↓ move  Enter play/stop  r refresh  s shazam  v viz  q quit  ${ANSI.reset}`);
   out.push(`${ANSI.dim} ${state.liveInfo || ''}${ANSI.reset}`);
   out.push('');
   for (let i = state.offset; i < Math.min(state.offset + listH, state.stations.length); i++) {
@@ -220,27 +256,24 @@ function onKey(buf: Buffer): void {
   if (s === '\x1B[D' || s === '-') { state.volume = Math.max(0, state.volume - 5); if (state.playing >= 0) play(state.playing); else render(); return; }
   if (s === 'r' || s === 'R') { state.status = 'refreshing...'; render(); buildStations().then(() => { state.status = state.playing >= 0 ? `playing: ${state.stations[state.playing].name}` : 'ready'; render(); }); return; }
   if (s === 'v' || s === 'V') { state.view = state.view === 'list' ? 'viz' : 'list'; render(); return; }
-  if (s === 'i' || s === 'I') {
+  if (s === 's' || s === 'S') {
     const st = state.stations[state.playing];
     if (!st || st.kind !== 'live') { state.status = 'live チャンネルのみ識別対象'; render(); return; }
-    const streams = getStreamUrls();
-    const url = state.playing === 0 ? streams.channel1.icecast : streams.channel2.icecast;
     state.identifying = true;
-    state.status = 'Icecast メタデータ取得中…';
+    state.status = 'シャザム 識別中… (10秒録音)';
     render();
-    fetchIcecastMetadata(url).then((meta) => {
+    identifyCurrentTrack(state.playing === 0 ? '1' : '2').then((track) => {
       state.identifying = false;
-      if (meta && (meta.title || meta.artist)) {
-        state.identifiedTrack = meta;
-        state.status = `現在曲: ${meta.artist ?? ''} - ${meta.title ?? ''}`;
+      if (track.source === 'shazam' && track.title !== 'Unknown') {
+        state.identifiedTrack = track;
+        state.status = `シャザム: ${track.artist} - ${track.title}`;
       } else {
-        state.identifiedTrack = null;
-        state.status = 'メタデータ取得不可 (Icecast タイトル未設定)';
+        state.status = 'シャザム: 一致なし';
       }
       render();
     }).catch(() => {
       state.identifying = false;
-      state.status = 'メタデータ取得エラー';
+      state.status = 'シャザム エラー';
       render();
     });
     return;
